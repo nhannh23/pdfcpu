@@ -21,9 +21,9 @@ import (
 
 	"io"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/color"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/draw"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/nhannh23/pdfcpu/pkg/pdfcpu/color"
+	"github.com/nhannh23/pdfcpu/pkg/pdfcpu/draw"
+	"github.com/nhannh23/pdfcpu/pkg/pdfcpu/types"
 )
 
 type BookletType int

@@ -35,9 +35,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/pdfcpu/pdfcpu/pkg/log"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/nhannh23/pdfcpu/pkg/log"
+	"github.com/nhannh23/pdfcpu/pkg/pdfcpu/model"
+	"github.com/nhannh23/pdfcpu/pkg/pdfcpu/types"
 	"github.com/pkg/errors"
 
 	"golang.org/x/text/secure/precis"

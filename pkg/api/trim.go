@@ -21,9 +21,9 @@ import (
 	"os"
 	"sort"
 
-	"github.com/pdfcpu/pdfcpu/pkg/log"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/nhannh23/pdfcpu/pkg/log"
+	"github.com/nhannh23/pdfcpu/pkg/pdfcpu"
+	"github.com/nhannh23/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pkg/errors"
 )
 

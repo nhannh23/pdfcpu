@@ -20,7 +20,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/cli"
+	"github.com/nhannh23/pdfcpu/pkg/cli"
 )
 
 /**************************************************************

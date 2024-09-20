@@ -19,7 +19,7 @@ package model
 import (
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/nhannh23/pdfcpu/pkg/pdfcpu/types"
 )
 
 func doTestParseBoxListOK(s string, t *testing.T) {

@@ -19,7 +19,7 @@ package model
 import (
 	"fmt"
 
-	"github.com/pdfcpu/pdfcpu/pkg/log"
+	"github.com/nhannh23/pdfcpu/pkg/log"
 )
 
 func ReportSpecViolation(xRefTable *XRefTable, err error) {
