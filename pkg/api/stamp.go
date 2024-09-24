@@ -17,6 +17,7 @@
 package api
 
 import (
+	"fmt"
 	"io"
 	"os"
 
@@ -453,6 +454,8 @@ func AddImageWatermarksFile(inFile, outFile string, selectedPages []string, onTo
 	if err != nil {
 		return err
 	}
+
+	fmt.Println("wm.String():::", wm.String())
 
 	return AddWatermarksFile(inFile, outFile, selectedPages, wm, conf)
 }
