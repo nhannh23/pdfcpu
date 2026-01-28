@@ -1441,20 +1441,22 @@ func updatePageContentsForWM(ctx *model.Context, pageNr int, obj types.Object, w
 		if isContentStreamShared(objNr, pageNr, refMap) {
 			// Clone the stream to create a page-specific copy
 			// This preserves all original content (including any drawing instructions)
-			// that may have been in the shared stream
+			// and all metadata (filters, encoding, etc.) from the shared stream
 			if err := sd.Decode(); err != nil && err != filter.ErrUnsupportedFilter {
 				return err
 			}
 
-			// Create a new stream with the same content as the original
-			newSD, err := ctx.NewStreamDictForBuf(sd.Content)
-			if err != nil {
-				return err
+			// Use Clone() to properly copy the entire StreamDict with all metadata
+			// This ensures filters, encoding parameters, and dictionary entries are preserved
+			clonedObj := sd.Clone()
+			clonedSD, ok := clonedObj.(types.StreamDict)
+			if !ok {
+				return errors.New("pdfcpu: failed to clone stream dict")
 			}
 
 			// Create new indirect reference for the cloned stream
 			// This gives it a unique object number (e.g., 100, 107, etc.)
-			newIR, err := ctx.IndRefForNewObject(*newSD)
+			newIR, err := ctx.IndRefForNewObject(clonedSD)
 			if err != nil {
 				return err
 			}
@@ -1472,7 +1474,7 @@ func updatePageContentsForWM(ctx *model.Context, pageNr int, obj types.Object, w
 			objNr = newIR.ObjectNumber.Value()
 			genNr = newIR.GenerationNumber.Value()
 			entry, _ = ctx.FindTableEntry(objNr, genNr)
-			sd = *newSD
+			sd = clonedSD
 		}
 
 		err = patchLastContentStreamForWatermark(&sd, gsID, xoID, wm)
