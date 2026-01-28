@@ -20,3 +20,5 @@ require (
 	github.com/clipperhouse/stringish v0.1.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.3.0 // indirect
 )
+
+replace github.com/pdfcpu/pdfcpu => github.com/nhann23/pdfcpu v0.11.2-0.20260109012453-de6e4e8fdcdf

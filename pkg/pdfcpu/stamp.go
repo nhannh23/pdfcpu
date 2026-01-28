@@ -1197,6 +1197,77 @@ func insertPageContentsForWM(ctx *model.Context, pageDict types.Dict, wm *model.
 	return nil
 }
 
+// buildContentStreamReferenceMap creates a map of which pages reference which content stream objects.
+// This map is built once and used for efficient lookup during stamp operations.
+//
+// Returns: map[objectNumber][]pageNumbers
+// Example: {83: [1, 2, 3, 21], 84: [1], 2: [2]} means:
+//   - Object 83 is referenced by pages 1, 2, 3, and 21 (shared)
+//   - Object 84 is only referenced by page 1
+//   - Object 2 is only referenced by page 2
+func buildContentStreamReferenceMap(ctx *model.Context) map[int][]int {
+	refMap := make(map[int][]int)
+
+	for pageNum := 1; pageNum <= ctx.PageCount; pageNum++ {
+		pageDict, _, _, err := ctx.PageDict(pageNum, false)
+		if err != nil {
+			continue
+		}
+
+		contentsObj, found := pageDict.Find("Contents")
+		if !found {
+			continue
+		}
+
+		// Collect all content stream object numbers for this page
+		if arr, err := ctx.DereferenceArray(contentsObj); err == nil {
+			// Contents is an array of content streams
+			for _, elem := range arr {
+				if ir, ok := elem.(types.IndirectRef); ok {
+					objNr := ir.ObjectNumber.Value()
+					refMap[objNr] = append(refMap[objNr], pageNum)
+				}
+			}
+		} else if ir, ok := contentsObj.(types.IndirectRef); ok {
+			// Contents is a single content stream reference
+			objNr := ir.ObjectNumber.Value()
+			refMap[objNr] = append(refMap[objNr], pageNum)
+		}
+	}
+
+	return refMap
+}
+
+// isContentStreamShared reports whether a content stream object is shared across
+// multiple pages. Some PDF writers optimize file size by having multiple pages
+// reference the same content stream object (typically an empty or minimal
+// placeholder stream). For example:
+//
+//	Page 1: Contents = [84 0 R, 83 0 R]
+//	Page 2: Contents = [2 0 R, 83 0 R]
+//	Page 3: Contents = [6 0 R, 83 0 R]
+//
+// Here, object 83 0 R is shared by all three pages.
+//
+// The function uses a pre-built reference map for O(1) lookup. It returns true
+// if any page other than currentPageNr references objNr, meaning the object
+// should be cloned before modification to avoid cross-page side effects.
+func isContentStreamShared(objNr int, currentPageNr int, refMap map[int][]int) bool {
+	pages, exists := refMap[objNr]
+	if !exists {
+		return false // Object not in map, treat as not shared
+	}
+
+	// Check if any page other than currentPageNr references this object
+	for _, pageNum := range pages {
+		if pageNum != currentPageNr {
+			return true // Found another page using this object
+		}
+	}
+
+	return false // Only currentPageNr uses this object
+}
+
 func patchFirstContentStreamForWatermark(sd *types.StreamDict, gsID, xoID string, wm *model.Watermark, isLast bool) error {
 	err := sd.Decode()
 	if err == filter.ErrUnsupportedFilter {
@@ -1268,7 +1339,10 @@ func patchLastContentStreamForWatermark(sd *types.StreamDict, gsID, xoID string,
 	return nil
 }
 
-func updatePageContentsForWM(ctx *model.Context, obj types.Object, wm *model.Watermark, gsID, xoID string) error {
+// updatePageContentsForWM updates a page's content streams to add watermark content.
+// The pageNr and refMap parameters (added for issue #1331) are used to efficiently detect
+// if content stream objects are shared with other pages, allowing us to clone them before modification.
+func updatePageContentsForWM(ctx *model.Context, pageNr int, obj types.Object, wm *model.Watermark, gsID, xoID string, refMap map[int][]int) error {
 	var entry *model.XRefTableEntry
 	var objNr int
 
@@ -1338,6 +1412,69 @@ func updatePageContentsForWM(ctx *model.Context, obj types.Object, wm *model.Wat
 		entry, _ = ctx.FindTableEntry(objNr, genNr)
 		sd, _ = (entry.Object).(types.StreamDict)
 
+		// Fix for issue #1331: Handle shared content streams
+		//
+		// Problem: Some PDF writers create documents where multiple pages share the same
+		// content stream object (e.g., an empty placeholder at the end of each page's
+		// Contents array). When we stamp different pages in separate command executions:
+		//   1. First stamp modifies the shared object (e.g., adds image watermark)
+		//   2. Second stamp modifies the same shared object again (adds text watermark)
+		//   3. Result: Both watermarks appear on all pages that share this object
+		//
+		// Solution: Before modifying a content stream, check if other pages reference it.
+		// If shared, clone it first to create a page-specific copy. This ensures:
+		//   - Each stamped page gets its own dedicated content stream object
+		//   - Unstamped pages continue using the original shared object (unchanged)
+		//   - No cross-page contamination or side effects
+		//
+		// Example:
+		//   Before stamping:
+		//     Page 1: Contents = [84 0 R, 83 0 R]  <- 83 is shared
+		//     Page 2: Contents = [2 0 R, 83 0 R]   <- 83 is shared
+		//   After stamping page 1:
+		//     Page 1: Contents = [84 0 R, 100 0 R] <- 100 is clone of 83, modified
+		//     Page 2: Contents = [2 0 R, 83 0 R]   <- 83 remains unchanged
+		//   After stamping page 2:
+		//     Page 1: Contents = [84 0 R, 100 0 R] <- unchanged
+		//     Page 2: Contents = [2 0 R, 107 0 R]  <- 107 is another clone of 83, modified
+		//
+		if isContentStreamShared(objNr, pageNr, refMap) {
+			// Clone the stream to create a page-specific copy
+			// This preserves all original content (including any drawing instructions)
+			// that may have been in the shared stream
+			if err := sd.Decode(); err != nil && err != filter.ErrUnsupportedFilter {
+				return err
+			}
+
+			// Create a new stream with the same content as the original
+			newSD, err := ctx.NewStreamDictForBuf(sd.Content)
+			if err != nil {
+				return err
+			}
+
+			// Create new indirect reference for the cloned stream
+			// This gives it a unique object number (e.g., 100, 107, etc.)
+			newIR, err := ctx.IndRefForNewObject(*newSD)
+			if err != nil {
+				return err
+			}
+
+			// Replace the shared object reference with our new cloned object
+			// Example: [84 0 R, 83 0 R] becomes [84 0 R, 100 0 R]
+			// We mutate o in place; o is the array from the xref (when Contents was
+			// IndRef). The page dict still points to that array via IndRef, so we must
+			// not call pageDict.Update("Contents", o)—that would replace the IndRef
+			// with a raw array and alter the PDF structure.
+			o[len(o)-1] = *newIR
+
+			// Now work with the cloned stream (has its own object number)
+			// Subsequent modifications will only affect this page's copy
+			objNr = newIR.ObjectNumber.Value()
+			genNr = newIR.GenerationNumber.Value()
+			entry, _ = ctx.FindTableEntry(objNr, genNr)
+			sd = *newSD
+		}
+
 		err = patchLastContentStreamForWatermark(&sd, gsID, xoID, wm)
 		if err != nil {
 			return err
@@ -1384,7 +1521,7 @@ func handleLink(ctx *model.Context, pageIndRef *types.IndirectRef, d types.Dict,
 	return err
 }
 
-func addPageWatermark(ctx *model.Context, pageNr int, wm model.Watermark) error {
+func addPageWatermark(ctx *model.Context, pageNr int, wm model.Watermark, refMap map[int][]int) error {
 	if pageNr > ctx.PageCount {
 		return errors.Errorf("pdfcpu: invalid page number: %d", pageNr)
 	}
@@ -1448,7 +1585,7 @@ func addPageWatermark(ctx *model.Context, pageNr int, wm model.Watermark) error 
 
 	obj, found := d.Find("Contents")
 	if found {
-		err = updatePageContentsForWM(ctx, obj, &wm, gsID, xoID)
+		err = updatePageContentsForWM(ctx, pageNr, obj, &wm, gsID, xoID, refMap)
 	} else {
 		err = insertPageContentsForWM(ctx, d, &wm, gsID, xoID)
 	}
@@ -1481,9 +1618,13 @@ func AddWatermarks(ctx *model.Context, selectedPages types.IntSet, wm *model.Wat
 		return err
 	}
 
+	// Build content stream reference map once for efficient lookup (issue #1331)
+	// This avoids O(n) page scans for each stamp operation
+	refMap := buildContentStreamReferenceMap(ctx)
+
 	for i := wm.PdfMultiStartPageNrDest; i <= ctx.PageCount; i++ {
 		if len(selectedPages) == 0 || selectedPages[i] {
-			if err = addPageWatermark(ctx, i, *wm); err != nil {
+			if err = addPageWatermark(ctx, i, *wm, refMap); err != nil {
 				return err
 			}
 		}
@@ -1534,12 +1675,15 @@ func AddWatermarksMap(ctx *model.Context, m map[int]*model.Watermark) error {
 		}
 	}
 
+	// Build content stream reference map once for efficient lookup (issue #1331)
+	refMap := buildContentStreamReferenceMap(ctx)
+
 	for pageNr, wm := range m {
 		wm.Ocg = ocgIndRef
 		wm.ExtGState = extGStateIndRef
 		wm.OnTop = onTop
 		wm.Opacity = opacity
-		if err := addPageWatermark(ctx, pageNr, *wm); err != nil {
+		if err := addPageWatermark(ctx, pageNr, *wm, refMap); err != nil {
 			return err
 		}
 	}
@@ -1595,13 +1739,16 @@ func AddWatermarksSliceMap(ctx *model.Context, m map[int][]*model.Watermark) err
 		}
 	}
 
+	// Build content stream reference map once for efficient lookup (issue #1331)
+	refMap := buildContentStreamReferenceMap(ctx)
+
 	for k, wms := range m {
 		for _, wm := range wms {
 			wm.Ocg = ocgIndRef
 			wm.ExtGState = extGStateIndRef
 			wm.OnTop = onTop
 			wm.Opacity = opacity
-			if err := addPageWatermark(ctx, k, *wm); err != nil {
+			if err := addPageWatermark(ctx, k, *wm, refMap); err != nil {
 				return err
 			}
 		}
